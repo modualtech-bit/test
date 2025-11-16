@@ -1,0 +1,92 @@
+import { NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth';
+import prisma from '@/lib/prisma';
+import { sendEmailNotification } from '@/lib/notifications';
+
+export async function GET(request: Request) {
+  try {
+    const session = await getServerSession(authOptions);
+
+    if (!session?.user) {
+      return NextResponse.json({ error: 'Niet geautoriseerd' }, { status: 401 });
+    }
+
+    const userId = (session.user as any).id;
+    const isAdmin = (session.user as any).role === 'admin';
+
+    const projects = await prisma.project.findMany({
+      where: isAdmin ? {} : { userId },
+      include: {
+        user: {
+          select: {
+            name: true,
+            email: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+
+    return NextResponse.json({ projects });
+  } catch (error) {
+    console.error('Error fetching projects:', error);
+    return NextResponse.json(
+      { error: 'Er is iets misgegaan' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const session = await getServerSession(authOptions);
+
+    if (!session?.user) {
+      return NextResponse.json({ error: 'Niet geautoriseerd' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { title, description, textInput, photoUrls, voiceMemoUrl } = body;
+
+    const userId = (session.user as any).id;
+
+    const project = await prisma.project.create({
+      data: {
+        userId,
+        title: title || 'Nieuw Project',
+        description,
+        textInput,
+        photoUrls: photoUrls || [],
+        voiceMemoUrl,
+        status: 'Nieuw',
+      },
+    });
+
+    // Send notification to admin
+    try {
+      await sendEmailNotification({
+        projectId: project.id,
+        userName: session.user.name || 'Onbekend',
+        userEmail: session.user.email || '',
+        description: textInput || description || 'Geen beschrijving',
+      });
+    } catch (notificationError) {
+      console.error('Notification error:', notificationError);
+      // Don't fail the project creation if notification fails
+    }
+
+    return NextResponse.json({
+      project,
+      message: 'Project succesvol aangemaakt',
+    });
+  } catch (error) {
+    console.error('Error creating project:', error);
+    return NextResponse.json(
+      { error: 'Er is iets misgegaan bij het aanmaken van het project' },
+      { status: 500 }
+    );
+  }
+}
